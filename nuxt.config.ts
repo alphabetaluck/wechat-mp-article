@@ -4,14 +4,11 @@ export default defineNuxtConfig({
   devtools: {
     enabled: false,
   },
-  modules: ['@vueuse/nuxt', '@nuxt/ui', 'nuxt-monaco-editor', '@sentry/nuxt/module', 'nuxt-umami'],
+  modules: ['@vueuse/nuxt', '@nuxt/ui', 'nuxt-monaco-editor', 'nuxt-umami'],
   ssr: false,
   runtimeConfig: {
     public: {
       aggridLicense: process.env.NUXT_AGGRID_LICENSE,
-      sentry: {
-        dsn: process.env.NUXT_SENTRY_DSN,
-      },
     },
     debugMpRequest: false,
   },
@@ -81,14 +78,6 @@ export default defineNuxtConfig({
       codeEditor: 'MonacoEditor', // 普通编辑器组件名
       diffEditor: 'MonacoDiffEditor', // 差异编辑器组件名
     },
-  },
-
-  // https://docs.sentry.io/platforms/javascript/guides/nuxt/manual-setup/
-  sentry: {
-    org: process.env.NUXT_SENTRY_ORG,
-    project: process.env.NUXT_SENTRY_PROJECT,
-    authToken: process.env.NUXT_SENTRY_AUTH_TOKEN,
-    telemetry: false,
   },
 
   // https://umami.nuxt.dev/api/configuration
