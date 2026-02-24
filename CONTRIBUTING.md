@@ -22,49 +22,47 @@ git clone git@github.com:wechat-article/wechat-article-exporter.git
 
 ### 安装项目依赖
 
-> 本项目使用 yarn@1.22 进行依赖管理
+> 本项目使用 pnpm 进行依赖管理
 
 ```shell
 corepack enable
-corepack prepare yarn@1.22.22 --activate
-yarn
+corepack prepare pnpm@latest --activate
+pnpm install
 ```
 
 ### 本地运行
 
 ```shell
-yarn dev
+pnpm dev
 ```
-
 
 ## 如何贡献
 
 ### 1. 报告 Bug 或建议功能
-- 先搜索现有 [Issues](https://github.com/wechat-article/wechat-article-exporter/issues)，避免重复。
+
+- 先搜索现有 [Issues](https://github.com/alphabetaluck/wechat-mp-article/issues)，避免重复。
 - 如果没有找到，创建一个新 Issue。
-    - Bug 报告请包含：复现步骤、预期行为、实际行为、环境信息（操作系统、浏览器、版本等）。
-    - 功能建议请详细描述需求和使用场景。
+  - Bug 报告请包含：复现步骤、预期行为、实际行为、环境信息（操作系统、浏览器、版本等）。
+  - 功能建议请详细描述需求和使用场景。
 
 ### 2. 提交代码
+
 请遵循以下流程：
 
 1. Fork 本仓库。
 2. 创建特性分支：`git checkout -b feature/你的功能描述` 或 `fix/你的修复描述`。
 3. 安装开发依赖并运行项目（参考 开发环境搭建）。
 4. 编写代码，确保：
-    - 遵循项目代码风格（使用 Prettier 工具）。
-    - 添加或更新测试用例。
-    - 通过所有测试：`yarn test`（或你的测试命令）。
+   - 遵循项目代码风格（使用 Prettier 工具）。
+   - 添加或更新测试用例。
+   - 通过所有测试：`pnpm test`（或你的测试命令）。
 5. 提交时使用清晰的 Commit 消息。
 6. Push 到你的 Fork 并打开 Pull Request。
-    - PR 标题和描述要清晰，引用相关 Issue（如 `fixes #123`）。
-    - 如果是重大更改，请先开 Issue 讨论。
+   - PR 标题和描述要清晰，引用相关 Issue（如 `fixes #123`）。
+   - 如果是重大更改，请先开 Issue 讨论。
 
-### 3. 文档或翻译贡献
-- 文档请修改 [docs](https://github.com/wechat-article/docs) 项目
-- 同样通过 Pull Request 提交
+### 3. 代码风格指南
 
-### 4. 代码风格指南
 - 代码格式化采用 prettier
 - 变量命名采用 camelCase
-- import 顺序采用`yarn format`命令格式化
+- import 顺序采用`pnpm format`命令格式化

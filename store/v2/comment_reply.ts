@@ -1,3 +1,4 @@
+import { request } from '#shared/utils/request';
 import { db } from './db';
 
 export interface CommentReplyAsset {
@@ -13,10 +14,19 @@ export interface CommentReplyAsset {
  * @param reply 缓存
  */
 export async function updateCommentReplyCache(reply: CommentReplyAsset): Promise<boolean> {
-  return db.transaction('rw', 'comment_reply', () => {
-    db.comment_reply.put(reply, `${reply.url}:${reply.contentID}`);
-    return true;
-  });
+  try {
+    const resp = await request<{ success: boolean }>('/api/data/comment-reply/update', {
+      method: 'POST',
+      body: reply,
+    });
+    return resp.success;
+  } catch (error) {
+    console.warn('Fallback to local Dexie for updateCommentReplyCache:', error);
+    return db.transaction('rw', 'comment_reply', () => {
+      db.comment_reply.put(reply, `${reply.url}:${reply.contentID}`);
+      return true;
+    });
+  }
 }
 
 /**
@@ -25,5 +35,15 @@ export async function updateCommentReplyCache(reply: CommentReplyAsset): Promise
  * @param contentID
  */
 export async function getCommentReplyCache(url: string, contentID: string): Promise<CommentReplyAsset | undefined> {
-  return db.comment_reply.get(`${url}:${contentID}`);
+  try {
+    return await request<CommentReplyAsset | undefined>('/api/data/comment-reply/get', {
+      query: {
+        url: url,
+        contentID: contentID,
+      },
+    });
+  } catch (error) {
+    console.warn('Fallback to local Dexie for getCommentReplyCache:', error);
+    return db.comment_reply.get(`${url}:${contentID}`);
+  }
 }

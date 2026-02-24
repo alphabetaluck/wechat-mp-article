@@ -128,7 +128,7 @@ export async function proxyMpRequest(options: RequestOptions) {
   }
 }
 
-export function getAuthKeyFromRequest(event: H3Event): string {
+export function getAuthKeyFromRequest(event: H3Event): string | undefined {
   let authKey = getRequestHeader(event, 'X-Auth-Key');
   if (!authKey) {
     const cookies = parseCookies(event);

@@ -1,4 +1,4 @@
-import { db } from './db';
+import { request } from '#shared/utils/request';
 
 export interface Info {
   fakeid: string;
@@ -25,45 +25,21 @@ export interface Info {
  * @param info
  */
 export async function updateInfoCache(info: Info): Promise<boolean> {
-  return db.transaction('rw', 'info', async () => {
-    let infoCache = await db.info.get(info.fakeid);
-    if (infoCache) {
-      if (info.completed) {
-        infoCache.completed = info.completed;
-      }
-      infoCache.count += info.count;
-      infoCache.articles += info.articles;
-      infoCache.nickname = info.nickname;
-      infoCache.round_head_img = info.round_head_img;
-      infoCache.total_count = info.total_count;
-      infoCache.update_time = Math.round(Date.now() / 1000);
-    } else {
-      infoCache = {
-        fakeid: info.fakeid,
-        completed: info.completed,
-        count: info.count,
-        articles: info.articles,
-        nickname: info.nickname,
-        round_head_img: info.round_head_img,
-        total_count: info.total_count,
-        create_time: Math.round(Date.now() / 1000),
-        update_time: Math.round(Date.now() / 1000),
-      };
-    }
-    db.info.put(infoCache);
-    return true;
+  const resp = await request<{ success: boolean }>('/api/data/info/update', {
+    method: 'POST',
+    body: info,
   });
+  return resp.success;
 }
 
 export async function updateLastUpdateTime(fakeid: string): Promise<boolean> {
-  return db.transaction('rw', 'info', async () => {
-    let infoCache = await db.info.get(fakeid);
-    if (infoCache) {
-      infoCache.last_update_time = Math.round(Date.now() / 1000);
-      db.info.put(infoCache);
-    }
-    return true;
+  const resp = await request<{ success: boolean }>('/api/data/info/last-update', {
+    method: 'POST',
+    body: {
+      fakeid: fakeid,
+    },
   });
+  return resp.success;
 }
 
 /**
@@ -71,11 +47,15 @@ export async function updateLastUpdateTime(fakeid: string): Promise<boolean> {
  * @param fakeid
  */
 export async function getInfoCache(fakeid: string): Promise<Info | undefined> {
-  return db.info.get(fakeid);
+  return request<Info | undefined>('/api/data/info/get', {
+    query: {
+      fakeid: fakeid,
+    },
+  });
 }
 
 export async function getAllInfo(): Promise<Info[]> {
-  return db.info.toArray();
+  return request<Info[]>('/api/data/info/all');
 }
 
 // 获取公众号的名称
@@ -90,15 +70,22 @@ export async function getAccountNameByFakeid(fakeid: string): Promise<string | n
 
 // 批量导入公众号
 export async function importInfos(infos: Info[]): Promise<void> {
-  for (const info of infos) {
-    // 导入时需要把相关数量置空
-    info.completed = false;
-    info.count = 0;
-    info.articles = 0;
-    info.total_count = 0;
-    info.create_time = undefined;
-    info.update_time = undefined;
-    info.last_update_time = undefined;
-    await updateInfoCache(info);
-  }
+  const normalized = infos.map(info => {
+    return {
+      ...info,
+      completed: false,
+      count: 0,
+      articles: 0,
+      total_count: 0,
+      create_time: undefined,
+      update_time: undefined,
+      last_update_time: undefined,
+    };
+  });
+  await request<{ success: boolean }>('/api/data/info/import', {
+    method: 'POST',
+    body: {
+      infos: normalized,
+    },
+  });
 }

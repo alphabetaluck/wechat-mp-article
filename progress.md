@@ -1,0 +1,34 @@
+# Progress
+
+## Session Log
+- Initialized migration planning files.
+- Confirmed migration scope for first phase: `info` + `article` + account delete API.
+- Implemented backend file database module: `server/db/article-info-db.ts`.
+- Added API routes:
+  - `server/api/data/info/*`
+  - `server/api/data/article/*`
+  - `server/api/data/account/delete.post.ts`
+- Refactored front-end store modules:
+  - `store/v2/info.ts`
+  - `store/v2/article.ts`
+  - `store/v2/index.ts`
+- Checked unexpected local change in `server/utils/proxy-request.ts` (type-only return widening, no runtime behavior change).
+- Extended backend persistence to content tables with blob storage:
+  - `server/db/content-db.ts`
+  - API routes for html/metadata/comment/comment-reply/resource/resource-map/asset/debug
+- Refactored front-end stores for content tables to backend APIs with Dexie fallback:
+  - `store/v2/html.ts`, `store/v2/metadata.ts`, `store/v2/comment.ts`, `store/v2/comment_reply.ts`
+  - `store/v2/resource.ts`, `store/v2/resource-map.ts`, `store/v2/assets.ts`, `store/v2/debug.ts`
+  - `store/v2/backend-blob.ts` (Blob <-> base64 helpers)
+- Removed remaining direct Dexie usage in single-article page:
+  - `pages/dashboard/single.vue` now uses store API (`upsertArticle`, `deleteArticle`, `deleteHtmlCache`)
+- Added single-flow backend endpoints:
+  - `POST /api/data/article/upsert`
+  - `POST /api/data/article/delete`
+  - `POST /api/data/html/delete`
+- Validation:
+  - `pnpm exec nuxi prepare` passed.
+  - Dev server started outside sandbox and HTTP endpoint checks passed for all `/api/data/*` groups, including new single-flow endpoints.
+- Documentation:
+  - Rewrote `README.md` for fork maintenance context.
+  - Removed upstream-only information and added this fork's backend file-db migration details and usage notes.

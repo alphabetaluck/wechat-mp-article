@@ -19,8 +19,8 @@ import GridLoading from '~/components/grid/Loading.vue';
 import GridNoRows from '~/components/grid/NoRows.vue';
 import PreviewArticle from '~/components/preview/Article.vue';
 import toastFactory from '~/composables/toast';
-import { db } from '~/store/v2/db';
-import { getHtmlCache } from '~/store/v2/html';
+import { deleteArticle, upsertArticle } from '~/store/v2/article';
+import { deleteHtmlCache, getHtmlCache } from '~/store/v2/html';
 import type { AppMsgExWithFakeID } from '~/types/types';
 import { Downloader } from '~/utils/download/Downloader';
 import { Exporter } from '~/utils/download/Exporter';
@@ -300,7 +300,7 @@ function buildVirtualArticle(row: SingleArticleRow): AppMsgExWithFakeID {
 }
 
 function upsertArticleStub(row: SingleArticleRow) {
-  return db.article.put(buildVirtualArticle(row), `${row.fakeid}:${row.aid}`);
+  return upsertArticle(buildVirtualArticle(row));
 }
 
 function getSelectedRows(): SingleArticleRow[] {
@@ -429,19 +429,16 @@ async function updateRowFromHtml(row: SingleArticleRow) {
     }
   }
 
-  await db.article.put(
-    {
-      ...buildVirtualArticle(row),
-      digest: row.digest,
-      cover: cover,
-      cover_img: cover,
-      pic_cdn_url_1_1: cover,
-      pic_cdn_url_3_4: cover,
-      pic_cdn_url_16_9: cover,
-      pic_cdn_url_235_1: cover,
-    },
-    `${row.fakeid}:${row.aid}`
-  );
+  await upsertArticle({
+    ...buildVirtualArticle(row),
+    digest: row.digest,
+    cover: cover,
+    cover_img: cover,
+    pic_cdn_url_1_1: cover,
+    pic_cdn_url_3_4: cover,
+    pic_cdn_url_16_9: cover,
+    pic_cdn_url_235_1: cover,
+  });
 }
 
 function persistRow(row: SingleArticleRow) {
@@ -489,11 +486,8 @@ async function handleExport(format: ExportFormat) {
 }
 
 async function deleteRowData(row: SingleArticleRow) {
-  const key = `${row.fakeid}:${row.aid}`;
-  await db.transaction('rw', ['article', 'html'], async () => {
-    await db.article.delete(key);
-    await db.html.delete(row.link);
-  });
+  await deleteArticle(row.fakeid, row.aid, row.link);
+  await deleteHtmlCache(row.link);
 }
 
 async function removeRows() {
