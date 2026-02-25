@@ -49,3 +49,7 @@
   - Removed all Dexie/IndexedDB fallback branches from `store/v2/*`.
   - Removed `store/v2/db.ts` and `dexie` dependency.
   - `store/v2` now uses backend `/api/data/*` APIs exclusively.
+- Account visibility fix after add:
+  - `dashboard/account` and `CredentialsDialog` now pre-create account info via `updateInfoCache` before first sync, so newly added accounts appear immediately in account list.
+  - Added user-facing error messaging for "added but first sync failed" scenario.
+  - `apis/index.ts#getArticleList` now rethrows cache-write errors instead of silently swallowing them.

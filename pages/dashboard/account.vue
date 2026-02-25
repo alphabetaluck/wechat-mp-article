@@ -24,7 +24,7 @@ import { IMAGE_PROXY, websiteName } from '~/config';
 import { sharedGridOptions } from '~/config/shared-grid-options';
 import { deleteAccountData } from '~/store/v2';
 import { getArticleCache, hitCache } from '~/store/v2/article';
-import { getAllInfo, getInfoCache, type Info, importInfos } from '~/store/v2/info';
+import { getAllInfo, getInfoCache, type Info, importInfos, updateInfoCache } from '~/store/v2/info';
 import type { AccountManifest } from '~/types/account';
 import type { Preferences } from '~/types/preferences';
 import { exportAccountJsonFile } from '~/utils/exporter';
@@ -66,12 +66,34 @@ function addAccount() {
 }
 async function onSelectAccount(account: Info) {
   addBtnLoading.value = true;
-  await loadAccountArticle(account, false);
-  await refresh();
-  addBtnLoading.value = false;
-  toast.success('公众号添加成功', `已成功添加公众号【${account.nickname}】，并拉取了第一页文章数据`);
-  // 通知 Credentials 面板按钮立即变更为“已添加”
-  accountEventBus.emit('account-added', { fakeid: account.fakeid });
+
+  const normalizedAccount: Info = {
+    fakeid: account.fakeid,
+    completed: false,
+    count: 0,
+    articles: 0,
+    total_count: 0,
+    nickname: account.nickname,
+    round_head_img: account.round_head_img,
+  };
+
+  try {
+    // 先落一条账号记录，保证列表立即可见
+    await updateInfoCache(normalizedAccount);
+    await refresh();
+    // 通知 Credentials 面板按钮立即变更为“已添加”
+    accountEventBus.emit('account-added', { fakeid: account.fakeid });
+    await loadAccountArticle(normalizedAccount, false);
+    await refresh();
+    toast.success('公众号添加成功', `已成功添加公众号【${account.nickname}】，并拉取了第一页文章数据`);
+  } catch (error: any) {
+    toast.error(
+      '公众号已添加',
+      `公众号【${account.nickname}】已加入列表，但首次同步失败：${error?.message || '未知错误'}`
+    );
+  } finally {
+    addBtnLoading.value = false;
+  }
 }
 
 // 表示同步过程中是否执行了取消操作
@@ -185,7 +207,7 @@ async function loadSelectedAccountArticle() {
   }
 }
 
-let globalRowData: Info[] = [];
+const globalRowData = ref<Info[]>([]);
 
 const columnDefs = ref<ColDef[]>([
   {
@@ -347,11 +369,34 @@ const gridOptions: GridOptions = defu(
 );
 
 const gridApi = shallowRef<GridApi | null>(null);
+let initialRefreshPromise: Promise<void> | null = null;
+let initialRefreshDone = false;
+
+function ensureInitialRefresh() {
+  if (initialRefreshDone) {
+    return Promise.resolve();
+  }
+  if (initialRefreshPromise) {
+    return initialRefreshPromise;
+  }
+  initialRefreshPromise = refresh()
+    .then(() => {
+      initialRefreshDone = true;
+    })
+    .finally(() => {
+      initialRefreshPromise = null;
+    });
+  return initialRefreshPromise;
+}
+
 function onGridReady(params: GridReadyEvent) {
   gridApi.value = params.api;
 
   restoreColumnState();
-  refresh();
+  ensureInitialRefresh().catch(error => {
+    console.error('加载公众号列表失败:', error);
+    toast.error('加载失败', error?.message || '无法加载公众号列表');
+  });
 }
 
 function onColumnStateChange() {
@@ -367,18 +412,42 @@ function saveColumnState() {
 function restoreColumnState() {
   const stateStr = localStorage.getItem('agGridColumnState-account');
   if (stateStr) {
-    const state = JSON.parse(stateStr);
-    gridApi.value?.applyColumnState({
-      state,
-      applyOrder: true,
-    });
+    try {
+      const state = JSON.parse(stateStr);
+      gridApi.value?.applyColumnState({
+        state,
+        applyOrder: true,
+      });
+    } catch (error) {
+      console.warn('Invalid ag-grid column state, reset it:', error);
+      localStorage.removeItem('agGridColumnState-account');
+    }
   }
 }
 
 async function refresh() {
-  globalRowData = await getAllInfo();
-  gridApi.value?.setGridOption('rowData', globalRowData);
+  const rows = await getAllInfo();
+  globalRowData.value = rows;
+  if (!gridApi.value) {
+    return;
+  }
+
+  gridApi.value.setGridOption('rowData', rows);
+  gridApi.value.refreshCells({ force: true });
+  gridApi.value.redrawRows();
+
+  // 若后端有数据但当前展示为 0，说明被遗留筛选条件过滤掉，自动恢复。
+  if (rows.length > 0 && gridApi.value.getDisplayedRowCount() === 0) {
+    gridApi.value.setFilterModel(null);
+    gridApi.value.onFilterChanged();
+  }
 }
+
+onMounted(() => {
+  ensureInitialRefresh().catch(error => {
+    console.error('页面初始化加载公众号列表失败:', error);
+  });
+});
 
 async function updateRow(fakeid: string) {
   const rowNode = gridApi.value?.getRowNode(fakeid);

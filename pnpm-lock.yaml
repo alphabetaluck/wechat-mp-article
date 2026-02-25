@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@ag-grid-community/locale':
-        specifier: ^34.0.0
+        specifier: 34.3.1
         version: 34.3.1
       '@iconify-json/famicons':
         specifier: ^1.2.0
@@ -39,13 +39,13 @@ importers:
         specifier: ^10.11.0
         version: 10.11.1(magicast@0.5.2)(nuxt@3.21.1(@biomejs/biome@2.3.8)(@parcel/watcher@2.5.6)(@types/node@25.3.0)(@vue/compiler-sfc@3.5.29)(better-sqlite3@12.6.2)(cac@6.7.14)(db0@0.3.4(better-sqlite3@12.6.2))(ioredis@5.9.3)(magicast@0.5.2)(rollup@4.59.0)(terser@5.46.0)(typescript@5.9.3)(vite@7.3.1(@types/node@25.3.0)(jiti@2.6.1)(terser@5.46.0)(yaml@2.8.2))(yaml@2.8.2))(vue@3.5.29(typescript@5.9.3))
       ag-grid-community:
-        specifier: 35.1.0
-        version: 35.1.0
+        specifier: 34.3.1
+        version: 34.3.1
       ag-grid-enterprise:
-        specifier: ^34.0.0
+        specifier: 34.3.1
         version: 34.3.1
       ag-grid-vue3:
-        specifier: ^34.0.0
+        specifier: 34.3.1
         version: 34.3.1(vue@3.5.29(typescript@5.9.3))
       better-sqlite3:
         specifier: 12.6.2
@@ -1703,14 +1703,8 @@ packages:
   ag-charts-types@12.3.1:
     resolution: {integrity: sha512-5216xYoawnvMXDFI6kTpPku+mH0Csiwu/FE7lsAm8Z22HEN6ciSG/V7g+IrpLWncELqksgENebCTP75PZ3CsHA==}
 
-  ag-charts-types@13.1.0:
-    resolution: {integrity: sha512-DytRM3CXli+Y013SC1Mr8lQBrhVTACK+11ilDHOhwUM0sRpmGuR51XFGcBKOliW1Vas1AycP31Cm3Pp0jx3hqw==}
-
   ag-grid-community@34.3.1:
     resolution: {integrity: sha512-PwlrPudsFOzGumphi2y9ihWeaUlIwKhOra/MXu2LjeV2U8DgLLcYS8CartE5Hszhn1poJHawwI9HWrxlKliwdw==}
-
-  ag-grid-community@35.1.0:
-    resolution: {integrity: sha512-yWFQfRNjv3KUBkHHzFdDOYGjPcDMU0B8Up4qG651diFlGRUGEGVs94SK73niWvk1FDZdpV9oWrwq3f30/qAoVg==}
 
   ag-grid-enterprise@34.3.1:
     resolution: {integrity: sha512-pee4Zh0gLeQED+RM+ofxNun9JSrYrE0ZVw90BibuBkhBCLXrtXtjGPiwM+Ylntl+GwJUuCXrTcVLXRHpdXVYbQ==}
@@ -6225,15 +6219,9 @@ snapshots:
 
   ag-charts-types@12.3.1: {}
 
-  ag-charts-types@13.1.0: {}
-
   ag-grid-community@34.3.1:
     dependencies:
       ag-charts-types: 12.3.1
-
-  ag-grid-community@35.1.0:
-    dependencies:
-      ag-charts-types: 13.1.0
 
   ag-grid-enterprise@34.3.1:
     dependencies:

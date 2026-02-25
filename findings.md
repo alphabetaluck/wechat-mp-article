@@ -18,3 +18,9 @@
 - Front-end stores have removed local Dexie fallback and now rely on backend API only.
 - `account/delete` now clears both article-info db and content db.
 - `better-sqlite3` requires native bindings; runtime fix is `npm rebuild better-sqlite3` when binding file is missing.
+- Root cause for "added account not visible":
+  - Add flow relied on first article-sync write path to create `info` row.
+  - With Dexie fallback removed and cache-write errors previously swallowed, add could appear successful while list row was never persisted.
+- Fix:
+  - Add flows now explicitly write `info` first (`updateInfoCache`) before sync.
+  - Cache-write failures in `getArticleList` are rethrown for explicit feedback.

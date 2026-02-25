@@ -131,7 +131,7 @@ import LoginModal from '~/components/modal/Login.vue';
 import toastFactory from '~/composables/toast';
 import useLoginCheck from '~/composables/useLoginCheck';
 import { CREDENTIAL_API_HOST, CREDENTIAL_LIVE_MINUTES } from '~/config';
-import { getInfoCache, type Info } from '~/store/v2/info';
+import { getInfoCache, type Info, updateInfoCache } from '~/store/v2/info';
 import type { ParsedCredential } from '~/types/credential';
 
 export type CredentialState = 'active' | 'inactive' | 'warning';
@@ -471,16 +471,19 @@ async function addAccount(credential: ParsedCredential) {
   };
 
   try {
-    await getArticleList(account, 0);
+    // 先写入账号，保证账号管理列表可见
+    await updateInfoCache(account);
     credential.added = true;
-    toast.success('公众号添加成功', `已成功添加公众号【${nickname}】`);
-    // 通知其他视图（如公众号管理列表）立即刷新
     accountEventBus.emit('account-added', { fakeid: credential.biz });
+
+    await getArticleList(account, 0);
+    toast.success('公众号添加成功', `已成功添加公众号【${nickname}】`);
   } catch (error: any) {
     if (error?.message === 'session expired') {
+      toast.error('公众号已添加', `公众号【${nickname}】已加入列表，但首次同步失败，请重新登录后重试`);
       modal.open(LoginModal);
     } else {
-      toast.error('添加公众号失败', error?.message || '未知错误');
+      toast.error('公众号已添加', `公众号【${nickname}】已加入列表，但首次同步失败：${error?.message || '未知错误'}`);
     }
   } finally {
     addingBiz.value = null;

@@ -10,14 +10,14 @@
 </template>
 
 <script setup lang="ts">
-import { ModuleRegistry } from 'ag-grid-community';
+import { AllCommunityModule, ModuleRegistry } from 'ag-grid-community';
 import { AllEnterpriseModule, LicenseManager } from 'ag-grid-enterprise';
 import { isDev } from '~/config';
 import { isChromeBrowser } from '~/utils';
 
 const runtimeConfig = useRuntimeConfig();
 
-ModuleRegistry.registerModules([AllEnterpriseModule]);
+ModuleRegistry.registerModules([AllCommunityModule, AllEnterpriseModule]);
 LicenseManager.setLicenseKey(runtimeConfig.public.aggridLicense);
 
 if (!isChromeBrowser()) {

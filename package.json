@@ -13,7 +13,7 @@
     "docker:publish": "docker push ghcr.io/wechat-article/wechat-mp-article:$npm_package_version"
   },
   "dependencies": {
-    "@ag-grid-community/locale": "^34.0.0",
+    "@ag-grid-community/locale": "34.3.1",
     "@iconify-json/famicons": "^1.2.0",
     "@iconify-json/heroicons": "^1.2.2",
     "@iconify-json/heroicons-solid": "^1.2.1",
@@ -23,9 +23,9 @@
     "@vueuse/components": "^10.11.0",
     "@vueuse/core": "^10.11.0",
     "@vueuse/nuxt": "^10.11.0",
-    "ag-grid-community": "35.1.0",
-    "ag-grid-enterprise": "^34.0.0",
-    "ag-grid-vue3": "^34.0.0",
+    "ag-grid-community": "34.3.1",
+    "ag-grid-enterprise": "34.3.1",
+    "ag-grid-vue3": "34.3.1",
     "better-sqlite3": "12.6.2",
     "cheerio": "^1.1.2",
     "date-fns": "^4.1.0",

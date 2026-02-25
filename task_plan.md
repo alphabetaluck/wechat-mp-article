@@ -12,6 +12,7 @@ Migrate core Dexie persistence from browser IndexedDB to backend storage and exp
 - [x] Phase 6: Replace JSON file db implementation with `better-sqlite3` and keep `/api/data/*` contracts unchanged
 - [x] Phase 7: Validate SQLite runtime (`npm rebuild better-sqlite3`) and regression test key endpoints
 - [x] Phase 8: Remove all front-end Dexie/IndexedDB fallback paths and enforce backend API-only storage flow
+- [x] Phase 9: Fix add-account visibility regression after IndexedDB removal
 
 ## Constraints
 - Keep existing function signatures in `store/v2/*` to minimize page-level changes.

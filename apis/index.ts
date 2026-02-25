@@ -48,6 +48,7 @@ export async function getArticleList(account: Info, begin = 0, keyword = ''): Pr
         }
       } catch (e) {
         console.error('写入文章缓存失败:', e);
+        throw e;
       }
     }
 
