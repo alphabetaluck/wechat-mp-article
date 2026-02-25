@@ -15,6 +15,6 @@
   - binary payloads in `${NITRO_FILE_DB_BASE:-.data/filedb}/blobs/*`
 - Added one-time legacy migration from JSON db files (`article-info.json`, `content-db.json`) into SQLite if target tables are empty.
 - Added `/api/data/*` endpoints for all migrated tables and switched corresponding `store/v2/*` modules to use them.
-- Front-end stores keep local Dexie fallback for phased compatibility.
+- Front-end stores have removed local Dexie fallback and now rely on backend API only.
 - `account/delete` now clears both article-info db and content db.
 - `better-sqlite3` requires native bindings; runtime fix is `npm rebuild better-sqlite3` when binding file is missing.

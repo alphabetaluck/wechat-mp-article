@@ -45,3 +45,7 @@
     - info/article/html/debug CRUD-like paths
     - metadata/comment/comment-reply/resource/resource-map/asset read-write
     - account delete cleanup across tables
+- Front-end storage hard cutover:
+  - Removed all Dexie/IndexedDB fallback branches from `store/v2/*`.
+  - Removed `store/v2/db.ts` and `dexie` dependency.
+  - `store/v2` now uses backend `/api/data/*` APIs exclusively.

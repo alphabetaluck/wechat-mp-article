@@ -2,7 +2,7 @@
 
 这是一个基于上游项目(wechat-article/wechat-article-exporter)维护的 fork，用于批量下载和导出微信公众号文章内容，支持文章列表、正文、评论、资源等数据处理与导出。
 
-本分支已将核心缓存存储从浏览器 IndexedDB（Dexie）迁移为后端 SQLite（保留前端 Dexie 兜底），以便统一数据管理、便于服务端部署与调试。
+本分支已将核心缓存存储从浏览器 IndexedDB（Dexie）迁移为后端 SQLite，以便统一数据管理、便于服务端部署与调试。
 
 ## 本 fork 的主要改动
 
@@ -13,8 +13,8 @@
 - 新增并接入 `/api/data/*` 数据接口：
   - `info`、`article`、`html`、`metadata`、`comment`、`comment-reply`
   - `resource`、`resource-map`、`asset`、`debug`、`account/delete`
-- 前端 `store/v2/*` 已切换为后端 API 优先，Dexie 作为失败兜底。
-- 单篇处理流程（`pages/dashboard/single.vue`）不再直接写 Dexie，改为通过 store API 写入后端。
+- 前端 `store/v2/*` 已切换为仅后端 API 路径，不再使用 Dexie/IndexedDB。
+- 单篇处理流程（`pages/dashboard/single.vue`）通过 store API 写入后端。
 
 ## 快速开始
 

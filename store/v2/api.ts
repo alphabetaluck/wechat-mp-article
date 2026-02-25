@@ -1,5 +1,3 @@
-import { db } from './db';
-
 export type ApiName = 'searchbiz' | 'appmsgpublish';
 
 interface APICall {
@@ -12,15 +10,15 @@ interface APICall {
 
 export type { APICall };
 
+const apiCalls: APICall[] = [];
+
 /**
  * 写入调用记录
  * @param record
  */
 export async function updateAPICache(record: APICall) {
-  return db.transaction('rw', 'api', () => {
-    db.api.put(record);
-    return true;
-  });
+  apiCalls.push(record);
+  return true;
 }
 
 export async function queryAPICall(
@@ -28,11 +26,5 @@ export async function queryAPICall(
   start: number,
   end: number = new Date().getTime()
 ): Promise<APICall[]> {
-  return db.transaction('r', 'api', () => {
-    return db.api
-      .where('account')
-      .equals(account)
-      .and(item => item.call_time > start && item.call_time < end)
-      .toArray();
-  });
+  return apiCalls.filter(item => item.account === account && item.call_time > start && item.call_time < end);
 }
