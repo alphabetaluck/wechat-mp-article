@@ -32,3 +32,16 @@
 - Documentation:
   - Rewrote `README.md` for fork maintenance context.
   - Removed upstream-only information and added this fork's backend file-db migration details and usage notes.
+- SQLite migration:
+  - Added `server/db/sqlite.ts` for shared `better-sqlite3` connection/bootstrap.
+  - Replaced `server/db/article-info-db.ts` JSON implementation with SQLite tables and SQL upsert/delete/query logic.
+  - Replaced `server/db/content-db.ts` JSON implementation with SQLite tables plus blob file references.
+  - Added one-time migration path from legacy JSON db files into SQLite when tables are empty.
+- Native module runtime:
+  - Encountered `better-sqlite3` binding missing error in dev runtime.
+  - Fixed via `npm rebuild better-sqlite3` (outside sandbox).
+- SQLite endpoint regression:
+  - Verified representative `/api/data/*` flows over real HTTP on local dev:
+    - info/article/html/debug CRUD-like paths
+    - metadata/comment/comment-reply/resource/resource-map/asset read-write
+    - account delete cleanup across tables

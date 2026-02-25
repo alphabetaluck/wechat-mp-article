@@ -2,11 +2,12 @@
 
 这是一个基于上游项目(wechat-article/wechat-article-exporter)维护的 fork，用于批量下载和导出微信公众号文章内容，支持文章列表、正文、评论、资源等数据处理与导出。
 
-本分支已将核心缓存存储从浏览器 IndexedDB（Dexie）迁移为后端文件数据库（保留前端 Dexie 兜底），以便统一数据管理、便于服务端部署与调试。
+本分支已将核心缓存存储从浏览器 IndexedDB（Dexie）迁移为后端 SQLite（保留前端 Dexie 兜底），以便统一数据管理、便于服务端部署与调试。
 
 ## 本 fork 的主要改动
 
-- 新增后端文件数据库：
+- 新增后端数据库模块：
+  - `server/db/sqlite.ts`
   - `server/db/article-info-db.ts`
   - `server/db/content-db.ts`
 - 新增并接入 `/api/data/*` 数据接口：
@@ -28,9 +29,9 @@ npm install
 npm run dev
 ```
 
-## 数据存储说明
+## 数据存储说明（SQLite + Blob）
 
-后端文件数据库默认写入：
+后端数据库默认写入：
 
 - `.data/filedb`
 
@@ -40,7 +41,18 @@ npm run dev
 NITRO_FILE_DB_BASE=/your/path/to/filedb
 ```
 
-其中正文、资源等二进制数据存储在 `blobs/` 子目录，索引与结构化数据存储为 JSON 文件。
+其中：
+
+- 结构化数据存储在 `.data/filedb/wechat-article.db`（SQLite）
+- 正文、资源等二进制数据存储在 `.data/filedb/blobs/` 子目录
+
+首次切换到 SQLite 时，若检测到旧版 JSON 库（`article-info.json` / `content-db.json`）且 SQLite 表为空，会自动执行一次迁移。
+
+如出现 `better-sqlite3` binding 错误，请执行：
+
+```bash
+npm rebuild better-sqlite3
+```
 
 ## 开发验证
 

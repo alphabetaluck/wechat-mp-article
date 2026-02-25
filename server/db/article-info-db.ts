@@ -1,5 +1,6 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { getDbBaseDirPath, getSqliteDb } from '~/server/db/sqlite';
 
 export interface InfoRecord {
   fakeid: string;
@@ -23,358 +24,538 @@ export interface ArticleRecord {
   [key: string]: any;
 }
 
-interface FileDbState {
-  infos: Record<string, InfoRecord>;
-  articlesByKey: Record<string, ArticleRecord>;
-  articleLinkToKey: Record<string, string>;
+interface LegacyFileDbState {
+  infos?: Record<string, InfoRecord>;
+  articlesByKey?: Record<string, ArticleRecord>;
 }
 
-const DB_FILENAME = 'article-info.json';
-const DEFAULT_STATE: FileDbState = {
-  infos: {},
-  articlesByKey: {},
-  articleLinkToKey: {},
-};
+interface InfoRow {
+  fakeid: string;
+  completed: number;
+  count: number;
+  articles: number;
+  nickname: string | null;
+  round_head_img: string | null;
+  total_count: number;
+  create_time: number;
+  update_time: number;
+  last_update_time: number | null;
+}
 
-let state: FileDbState | null = null;
-let queue: Promise<unknown> = Promise.resolve();
+interface ArticleRow {
+  fakeid: string;
+  aid: string;
+  link: string;
+  create_time: number;
+  is_deleted: number;
+  payload: string;
+}
+
+let initialized = false;
 
 function nowSeconds(): number {
   return Math.round(Date.now() / 1000);
 }
 
-function getDbBaseDir(): string {
-  const base = process.env.NITRO_FILE_DB_BASE || '.data/filedb';
-  return path.resolve(process.cwd(), base);
+function toNumber(value: unknown, fallback = 0): number {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
 }
 
-function getDbFilePath(): string {
-  return path.join(getDbBaseDir(), DB_FILENAME);
-}
-
-async function ensureLoaded(): Promise<void> {
-  if (state) {
+function ensureSchemaAndMigrate(): void {
+  if (initialized) {
     return;
   }
 
-  const filePath = getDbFilePath();
+  const db = getSqliteDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS infos (
+      fakeid TEXT PRIMARY KEY,
+      completed INTEGER NOT NULL DEFAULT 0,
+      count INTEGER NOT NULL DEFAULT 0,
+      articles INTEGER NOT NULL DEFAULT 0,
+      nickname TEXT,
+      round_head_img TEXT,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      create_time INTEGER NOT NULL,
+      update_time INTEGER NOT NULL,
+      last_update_time INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS articles (
+      fakeid TEXT NOT NULL,
+      aid TEXT NOT NULL,
+      link TEXT NOT NULL,
+      create_time INTEGER NOT NULL DEFAULT 0,
+      is_deleted INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL,
+      PRIMARY KEY(fakeid, aid)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_articles_fakeid_create_time ON articles(fakeid, create_time);
+    CREATE INDEX IF NOT EXISTS idx_articles_link ON articles(link);
+  `);
+
+  migrateLegacyJsonIfNeeded();
+  initialized = true;
+}
+
+function migrateLegacyJsonIfNeeded(): void {
+  const db = getSqliteDb();
+  const infoCount = (db.prepare('SELECT COUNT(*) as count FROM infos').get() as { count: number }).count;
+  const articleCount = (db.prepare('SELECT COUNT(*) as count FROM articles').get() as { count: number }).count;
+  if (infoCount > 0 || articleCount > 0) {
+    return;
+  }
+
+  const legacyPath = path.join(getDbBaseDirPath(), 'article-info.json');
+  if (!existsSync(legacyPath)) {
+    return;
+  }
+
   try {
-    const raw = await fs.readFile(filePath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<FileDbState>;
-    state = {
-      infos: parsed.infos || {},
-      articlesByKey: parsed.articlesByKey || {},
-      articleLinkToKey: parsed.articleLinkToKey || {},
-    };
-  } catch (error: any) {
-    if (error?.code !== 'ENOENT') {
-      console.error('Failed to load file database, fallback to empty state:', error);
-    }
-    state = structuredClone(DEFAULT_STATE);
+    const parsed = JSON.parse(readFileSync(legacyPath, 'utf-8')) as LegacyFileDbState;
+    const infos = Object.values(parsed.infos || {});
+    const articles = Object.values(parsed.articlesByKey || {});
+
+    const tx = db.transaction(() => {
+      const insertInfo = db.prepare(`
+        INSERT INTO infos (
+          fakeid, completed, count, articles, nickname, round_head_img,
+          total_count, create_time, update_time, last_update_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fakeid) DO UPDATE SET
+          completed = excluded.completed,
+          count = excluded.count,
+          articles = excluded.articles,
+          nickname = excluded.nickname,
+          round_head_img = excluded.round_head_img,
+          total_count = excluded.total_count,
+          update_time = excluded.update_time,
+          last_update_time = excluded.last_update_time
+      `);
+
+      const upsertArticle = db.prepare(`
+        INSERT INTO articles (fakeid, aid, link, create_time, is_deleted, payload)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fakeid, aid) DO UPDATE SET
+          link = excluded.link,
+          create_time = excluded.create_time,
+          is_deleted = excluded.is_deleted,
+          payload = excluded.payload
+      `);
+
+      for (const info of infos) {
+        const ts = nowSeconds();
+        insertInfo.run(
+          info.fakeid,
+          info.completed ? 1 : 0,
+          toNumber(info.count),
+          toNumber(info.articles),
+          info.nickname ?? null,
+          info.round_head_img ?? null,
+          toNumber(info.total_count),
+          toNumber(info.create_time, ts),
+          toNumber(info.update_time, ts),
+          info.last_update_time == null ? null : toNumber(info.last_update_time)
+        );
+      }
+
+      for (const article of articles) {
+        if (!article.fakeid || !article.aid || !article.link) {
+          continue;
+        }
+        upsertArticle.run(
+          article.fakeid,
+          article.aid,
+          article.link,
+          toNumber(article.create_time),
+          article.is_deleted ? 1 : 0,
+          JSON.stringify(article)
+        );
+      }
+    });
+
+    tx();
+  } catch (error) {
+    console.error('Failed to migrate legacy article-info.json into sqlite:', error);
   }
 }
 
-async function persist(): Promise<void> {
-  await ensureLoaded();
-
-  const baseDir = getDbBaseDir();
-  const filePath = getDbFilePath();
-  const tmpPath = `${filePath}.tmp`;
-  await fs.mkdir(baseDir, { recursive: true });
-  await fs.writeFile(tmpPath, JSON.stringify(state), 'utf-8');
-  await fs.rename(tmpPath, filePath);
+function rowToInfoRecord(row: InfoRow): InfoRecord {
+  return {
+    fakeid: row.fakeid,
+    completed: row.completed === 1,
+    count: toNumber(row.count),
+    articles: toNumber(row.articles),
+    nickname: row.nickname || undefined,
+    round_head_img: row.round_head_img || undefined,
+    total_count: toNumber(row.total_count),
+    create_time: toNumber(row.create_time),
+    update_time: toNumber(row.update_time),
+    last_update_time: row.last_update_time == null ? undefined : toNumber(row.last_update_time),
+  };
 }
 
-async function runExclusive<T>(task: () => Promise<T>): Promise<T> {
-  const next = queue.then(task, task);
-  queue = next.then(
-    () => undefined,
-    () => undefined
-  );
-  return next;
+function rowToArticleRecord(row: ArticleRow): ArticleRecord {
+  try {
+    const parsed = JSON.parse(row.payload) as ArticleRecord;
+    if (parsed && typeof parsed === 'object') {
+      return {
+        ...parsed,
+        fakeid: parsed.fakeid || row.fakeid,
+        aid: parsed.aid || row.aid,
+        link: parsed.link || row.link,
+        create_time: toNumber(parsed.create_time, row.create_time),
+        is_deleted: Boolean(parsed.is_deleted ?? row.is_deleted),
+      };
+    }
+  } catch {
+    // ignore malformed payload and fallback to db columns
+  }
+
+  return {
+    fakeid: row.fakeid,
+    aid: row.aid,
+    link: row.link,
+    create_time: toNumber(row.create_time),
+    is_deleted: row.is_deleted === 1,
+  };
 }
 
-function getInfoFromState(fakeid: string): InfoRecord | undefined {
-  return state?.infos[fakeid];
+function withDb<T>(task: (db: ReturnType<typeof getSqliteDb>) => T): T {
+  ensureSchemaAndMigrate();
+  return task(getSqliteDb());
 }
 
 export async function getAllInfosFromDb(): Promise<InfoRecord[]> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return Object.values(state!.infos);
+  return withDb(db => {
+    const rows = db.prepare('SELECT * FROM infos').all() as InfoRow[];
+    return rows.map(rowToInfoRecord);
   });
 }
 
 export async function getInfoFromDb(fakeid: string): Promise<InfoRecord | undefined> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return getInfoFromState(fakeid);
+  return withDb(db => {
+    const row = db.prepare('SELECT * FROM infos WHERE fakeid = ?').get(fakeid) as InfoRow | undefined;
+    return row ? rowToInfoRecord(row) : undefined;
   });
 }
 
 export async function updateInfoInDb(info: InfoRecord): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
+  return withDb(db => {
+    const existing = db.prepare('SELECT * FROM infos WHERE fakeid = ?').get(info.fakeid) as InfoRow | undefined;
+    const ts = nowSeconds();
 
-    let infoCache = getInfoFromState(info.fakeid);
-    if (infoCache) {
-      if (info.completed) {
-        infoCache.completed = info.completed;
-      }
-      infoCache.count += info.count;
-      infoCache.articles += info.articles;
-      infoCache.nickname = info.nickname;
-      infoCache.round_head_img = info.round_head_img;
-      infoCache.total_count = info.total_count;
-      infoCache.update_time = nowSeconds();
+    if (existing) {
+      db.prepare(`
+        UPDATE infos
+        SET completed = ?, count = ?, articles = ?, nickname = ?, round_head_img = ?, total_count = ?, update_time = ?
+        WHERE fakeid = ?
+      `).run(
+        info.completed ? 1 : existing.completed,
+        toNumber(existing.count) + toNumber(info.count),
+        toNumber(existing.articles) + toNumber(info.articles),
+        info.nickname ?? null,
+        info.round_head_img ?? null,
+        toNumber(info.total_count),
+        ts,
+        info.fakeid
+      );
     } else {
-      infoCache = {
-        fakeid: info.fakeid,
-        completed: info.completed,
-        count: info.count,
-        articles: info.articles,
-        nickname: info.nickname,
-        round_head_img: info.round_head_img,
-        total_count: info.total_count,
-        create_time: nowSeconds(),
-        update_time: nowSeconds(),
-      };
+      db.prepare(`
+        INSERT INTO infos (
+          fakeid, completed, count, articles, nickname, round_head_img,
+          total_count, create_time, update_time, last_update_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        info.fakeid,
+        info.completed ? 1 : 0,
+        toNumber(info.count),
+        toNumber(info.articles),
+        info.nickname ?? null,
+        info.round_head_img ?? null,
+        toNumber(info.total_count),
+        ts,
+        ts,
+        info.last_update_time == null ? null : toNumber(info.last_update_time)
+      );
     }
-    state!.infos[info.fakeid] = infoCache;
 
-    await persist();
     return true;
   });
 }
 
 export async function updateLastUpdateTimeInDb(fakeid: string): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const infoCache = getInfoFromState(fakeid);
-    if (infoCache) {
-      infoCache.last_update_time = nowSeconds();
-      state!.infos[fakeid] = infoCache;
-      await persist();
-    }
+  return withDb(db => {
+    const ts = nowSeconds();
+    db.prepare('UPDATE infos SET last_update_time = ? WHERE fakeid = ?').run(ts, fakeid);
     return true;
   });
 }
 
 export async function importInfosToDb(infos: InfoRecord[]): Promise<void> {
-  await runExclusive(async () => {
-    await ensureLoaded();
+  withDb(db => {
+    const ts = nowSeconds();
+    const tx = db.transaction((payload: InfoRecord[]) => {
+      const existingStmt = db.prepare('SELECT create_time FROM infos WHERE fakeid = ?');
+      const upsertStmt = db.prepare(`
+        INSERT INTO infos (
+          fakeid, completed, count, articles, nickname, round_head_img,
+          total_count, create_time, update_time, last_update_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(fakeid) DO UPDATE SET
+          completed = excluded.completed,
+          count = excluded.count,
+          articles = excluded.articles,
+          nickname = excluded.nickname,
+          round_head_img = excluded.round_head_img,
+          total_count = excluded.total_count,
+          update_time = excluded.update_time
+      `);
 
-    for (const info of infos) {
-      const prev = getInfoFromState(info.fakeid);
-      state!.infos[info.fakeid] = {
-        fakeid: info.fakeid,
-        completed: false,
-        count: 0,
-        articles: 0,
-        nickname: info.nickname,
-        round_head_img: info.round_head_img,
-        total_count: 0,
-        create_time: prev?.create_time || nowSeconds(),
-        update_time: nowSeconds(),
-      };
-    }
+      for (const info of payload) {
+        const existed = existingStmt.get(info.fakeid) as { create_time?: number } | undefined;
+        upsertStmt.run(
+          info.fakeid,
+          0,
+          0,
+          0,
+          info.nickname ?? null,
+          info.round_head_img ?? null,
+          0,
+          toNumber(existed?.create_time, ts),
+          ts,
+          null
+        );
+      }
+    });
 
-    await persist();
+    tx(infos);
   });
 }
 
-function buildArticleKey(fakeid: string, aid: string): string {
-  return `${fakeid}:${aid}`;
-}
-
-function getAllArticles(): ArticleRecord[] {
-  return Object.values(state!.articlesByKey);
-}
-
 export async function syncArticleCacheToDb(account: InfoRecord, publishPage: any): Promise<void> {
-  await runExclusive(async () => {
-    await ensureLoaded();
-
+  withDb(db => {
     const fakeid = account.fakeid;
-    const total_count = Number(publishPage?.total_count || 0);
+    const totalCount = toNumber(publishPage?.total_count);
     const publishList = Array.isArray(publishPage?.publish_list)
       ? publishPage.publish_list.filter((item: any) => !!item?.publish_info)
       : [];
 
+    const selectArticle = db.prepare('SELECT 1 FROM articles WHERE fakeid = ? AND aid = ? LIMIT 1');
+    const upsertArticle = db.prepare(`
+      INSERT INTO articles (fakeid, aid, link, create_time, is_deleted, payload)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(fakeid, aid) DO UPDATE SET
+        link = excluded.link,
+        create_time = excluded.create_time,
+        is_deleted = excluded.is_deleted,
+        payload = excluded.payload
+    `);
+
     let msgCount = 0;
     let articleCount = 0;
 
-    for (const item of publishList) {
-      let publishInfo: any;
-      try {
-        publishInfo = typeof item.publish_info === 'string' ? JSON.parse(item.publish_info) : item.publish_info;
-      } catch {
-        continue;
-      }
-
-      const appmsgex = Array.isArray(publishInfo?.appmsgex) ? publishInfo.appmsgex : [];
-      let newEntryCount = 0;
-      for (const article of appmsgex) {
-        if (!article?.aid || !article?.link) {
+    const tx = db.transaction(() => {
+      for (const item of publishList) {
+        let publishInfo: any;
+        try {
+          publishInfo = typeof item.publish_info === 'string' ? JSON.parse(item.publish_info) : item.publish_info;
+        } catch {
           continue;
         }
-        const key = buildArticleKey(fakeid, article.aid);
-        const existed = !!state!.articlesByKey[key];
-        const normalized = { ...article, fakeid } as ArticleRecord;
-        state!.articlesByKey[key] = normalized;
-        state!.articleLinkToKey[normalized.link] = key;
 
-        if (!existed) {
-          newEntryCount++;
-          articleCount++;
+        const appmsgex = Array.isArray(publishInfo?.appmsgex) ? publishInfo.appmsgex : [];
+        let newEntryCount = 0;
+
+        for (const article of appmsgex) {
+          if (!article?.aid || !article?.link) {
+            continue;
+          }
+
+          const normalized = {
+            ...article,
+            fakeid,
+          } as ArticleRecord;
+
+          const existed = !!selectArticle.get(fakeid, normalized.aid);
+          upsertArticle.run(
+            fakeid,
+            normalized.aid,
+            normalized.link,
+            toNumber(normalized.create_time),
+            normalized.is_deleted ? 1 : 0,
+            JSON.stringify(normalized)
+          );
+
+          if (!existed) {
+            newEntryCount++;
+            articleCount++;
+          }
+        }
+
+        if (newEntryCount > 0) {
+          msgCount++;
         }
       }
 
-      if (newEntryCount > 0) {
-        msgCount++;
-      }
-    }
+      const completed = publishList.length === 0;
+      const infoRow = db.prepare('SELECT * FROM infos WHERE fakeid = ?').get(fakeid) as InfoRow | undefined;
+      const ts = nowSeconds();
 
-    let infoCache = state!.infos[fakeid];
-    const completed = publishList.length === 0;
-    if (!infoCache) {
-      infoCache = {
-        fakeid,
-        completed,
-        count: msgCount,
-        articles: articleCount,
-        nickname: account.nickname,
-        round_head_img: account.round_head_img,
-        total_count,
-        create_time: nowSeconds(),
-        update_time: nowSeconds(),
-      };
-    } else {
-      if (completed) {
-        infoCache.completed = true;
+      if (!infoRow) {
+        db.prepare(`
+          INSERT INTO infos (
+            fakeid, completed, count, articles, nickname, round_head_img,
+            total_count, create_time, update_time, last_update_time
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          fakeid,
+          completed ? 1 : 0,
+          msgCount,
+          articleCount,
+          account.nickname ?? null,
+          account.round_head_img ?? null,
+          totalCount,
+          ts,
+          ts,
+          null
+        );
+      } else {
+        db.prepare(`
+          UPDATE infos
+          SET completed = ?, count = ?, articles = ?, nickname = ?, round_head_img = ?, total_count = ?, update_time = ?
+          WHERE fakeid = ?
+        `).run(
+          completed ? 1 : infoRow.completed,
+          toNumber(infoRow.count) + msgCount,
+          toNumber(infoRow.articles) + articleCount,
+          account.nickname ?? null,
+          account.round_head_img ?? null,
+          totalCount,
+          ts,
+          fakeid
+        );
       }
-      infoCache.count += msgCount;
-      infoCache.articles += articleCount;
-      infoCache.nickname = account.nickname;
-      infoCache.round_head_img = account.round_head_img;
-      infoCache.total_count = total_count;
-      infoCache.update_time = nowSeconds();
-    }
-    state!.infos[fakeid] = infoCache;
+    });
 
-    await persist();
+    tx();
   });
 }
 
 export async function hitArticleCacheFromDb(fakeid: string, createTime: number): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return getAllArticles().some(article => article.fakeid === fakeid && article.create_time < createTime);
+  return withDb(db => {
+    const row = db
+      .prepare('SELECT 1 as hit FROM articles WHERE fakeid = ? AND create_time < ? LIMIT 1')
+      .get(fakeid, createTime) as { hit: number } | undefined;
+    return !!row;
   });
 }
 
 export async function getArticleCacheFromDb(fakeid: string, createTime: number): Promise<ArticleRecord[]> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return getAllArticles()
-      .filter(article => article.fakeid === fakeid && article.create_time < createTime)
-      .sort((a, b) => a.create_time - b.create_time);
+  return withDb(db => {
+    const rows = db
+      .prepare('SELECT * FROM articles WHERE fakeid = ? AND create_time < ? ORDER BY create_time ASC')
+      .all(fakeid, createTime) as ArticleRow[];
+    return rows.map(rowToArticleRecord);
   });
 }
 
 export async function getArticleByLinkFromDb(url: string): Promise<ArticleRecord | undefined> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-
-    const key = state!.articleLinkToKey[url];
-    if (key) {
-      return state!.articlesByKey[key];
-    }
-
-    return getAllArticles().find(article => article.link === url);
+  return withDb(db => {
+    const row = db.prepare('SELECT * FROM articles WHERE link = ? LIMIT 1').get(url) as ArticleRow | undefined;
+    return row ? rowToArticleRecord(row) : undefined;
   });
 }
 
 export async function upsertArticleToDb(article: ArticleRecord): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
+  return withDb(db => {
     if (!article.fakeid || !article.aid || !article.link) {
       throw new Error('Invalid article payload');
     }
-    const key = buildArticleKey(article.fakeid, article.aid);
-    state!.articlesByKey[key] = article;
-    state!.articleLinkToKey[article.link] = key;
-    await persist();
+
+    db.prepare(`
+      INSERT INTO articles (fakeid, aid, link, create_time, is_deleted, payload)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(fakeid, aid) DO UPDATE SET
+        link = excluded.link,
+        create_time = excluded.create_time,
+        is_deleted = excluded.is_deleted,
+        payload = excluded.payload
+    `).run(
+      article.fakeid,
+      article.aid,
+      article.link,
+      toNumber(article.create_time),
+      article.is_deleted ? 1 : 0,
+      JSON.stringify(article)
+    );
+
     return true;
   });
 }
 
 export async function deleteArticleFromDb(fakeid: string, aid: string, link?: string): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const key = buildArticleKey(fakeid, aid);
-    const article = state!.articlesByKey[key];
-    if (article) {
-      delete state!.articlesByKey[key];
-      delete state!.articleLinkToKey[article.link];
-      await persist();
+  return withDb(db => {
+    const byKey = db.prepare('DELETE FROM articles WHERE fakeid = ? AND aid = ?').run(fakeid, aid);
+    if (byKey.changes > 0) {
       return true;
     }
 
-    if (link) {
-      const keyByLink = state!.articleLinkToKey[link];
-      if (keyByLink) {
-        const target = state!.articlesByKey[keyByLink];
-        delete state!.articlesByKey[keyByLink];
-        if (target?.link) {
-          delete state!.articleLinkToKey[target.link];
-        }
-        await persist();
-        return true;
-      }
+    if (!link) {
+      return false;
     }
-    return false;
+
+    const target = db.prepare('SELECT fakeid, aid FROM articles WHERE link = ? LIMIT 1').get(link) as
+      | {
+          fakeid: string;
+          aid: string;
+        }
+      | undefined;
+
+    if (!target) {
+      return false;
+    }
+
+    const byLink = db.prepare('DELETE FROM articles WHERE fakeid = ? AND aid = ?').run(target.fakeid, target.aid);
+    return byLink.changes > 0;
   });
 }
 
 export async function markArticleDeletedInDb(url: string): Promise<void> {
-  await runExclusive(async () => {
-    await ensureLoaded();
-
-    const key = state!.articleLinkToKey[url];
-    if (key && state!.articlesByKey[key]) {
-      state!.articlesByKey[key].is_deleted = true;
-      await persist();
+  withDb(db => {
+    const row = db.prepare('SELECT * FROM articles WHERE link = ? LIMIT 1').get(url) as ArticleRow | undefined;
+    if (!row) {
       return;
     }
 
-    for (const [articleKey, article] of Object.entries(state!.articlesByKey)) {
-      if (article.link === url) {
-        article.is_deleted = true;
-        state!.articleLinkToKey[url] = articleKey;
-        await persist();
-        return;
-      }
-    }
+    let payload = rowToArticleRecord(row);
+    payload = {
+      ...payload,
+      is_deleted: true,
+    };
+
+    db.prepare('UPDATE articles SET is_deleted = 1, payload = ? WHERE fakeid = ? AND aid = ?').run(
+      JSON.stringify(payload),
+      row.fakeid,
+      row.aid
+    );
   });
 }
 
 export async function deleteAccountDataFromDb(fakeids: string[]): Promise<void> {
-  await runExclusive(async () => {
-    await ensureLoaded();
-    const idSet = new Set(fakeids);
+  if (!fakeids.length) {
+    return;
+  }
 
-    for (const fakeid of fakeids) {
-      delete state!.infos[fakeid];
-    }
+  withDb(db => {
+    const placeholders = fakeids.map(() => '?').join(',');
+    const tx = db.transaction((ids: string[]) => {
+      db.prepare(`DELETE FROM infos WHERE fakeid IN (${placeholders})`).run(...ids);
+      db.prepare(`DELETE FROM articles WHERE fakeid IN (${placeholders})`).run(...ids);
+    });
 
-    for (const [key, article] of Object.entries(state!.articlesByKey)) {
-      if (idSet.has(article.fakeid)) {
-        delete state!.articlesByKey[key];
-        delete state!.articleLinkToKey[article.link];
-      }
-    }
-
-    await persist();
+    tx(fakeids);
   });
 }

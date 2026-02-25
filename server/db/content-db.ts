@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { getBlobRootDir, getDbBaseDirPath, getSqliteDb } from '~/server/db/sqlite';
 
 interface BlobRef {
   kind: string;
@@ -66,94 +68,346 @@ interface ResourceMapRecord {
   resources: string[];
 }
 
-interface ContentDbState {
-  html: Record<string, HtmlRecord>;
-  metadata: Record<string, MetadataRecord>;
-  comment: Record<string, CommentRecord>;
-  commentReply: Record<string, CommentReplyRecord>;
-  resource: Record<string, ResourceRecord>;
-  resourceMap: Record<string, ResourceMapRecord>;
-  asset: Record<string, AssetRecord>;
-  debug: Record<string, DebugRecord>;
+interface LegacyContentDbState {
+  html?: Record<string, HtmlRecord>;
+  metadata?: Record<string, MetadataRecord>;
+  comment?: Record<string, CommentRecord>;
+  commentReply?: Record<string, CommentReplyRecord>;
+  resource?: Record<string, ResourceRecord>;
+  resourceMap?: Record<string, ResourceMapRecord>;
+  asset?: Record<string, AssetRecord>;
+  debug?: Record<string, DebugRecord>;
 }
 
-const DB_FILENAME = 'content-db.json';
-const DEFAULT_STATE: ContentDbState = {
-  html: {},
-  metadata: {},
-  comment: {},
-  commentReply: {},
-  resource: {},
-  resourceMap: {},
-  asset: {},
-  debug: {},
-};
-
-let state: ContentDbState | null = null;
-let queue: Promise<unknown> = Promise.resolve();
-
-function getDbBaseDir(): string {
-  const base = process.env.NITRO_FILE_DB_BASE || '.data/filedb';
-  return path.resolve(process.cwd(), base);
+interface BlobRow {
+  blob_kind: string;
+  blob_sha256: string;
+  blob_file_type: string;
+  blob_size: number;
+  blob_relative_path: string;
 }
 
-function getDbFilePath(): string {
-  return path.join(getDbBaseDir(), DB_FILENAME);
-}
+let initialized = false;
 
-function getBlobRootDir(): string {
-  return path.join(getDbBaseDir(), 'blobs');
-}
-
-async function ensureLoaded(): Promise<void> {
-  if (state) {
+function ensureSchemaAndMigrate(): void {
+  if (initialized) {
     return;
   }
 
-  const filePath = getDbFilePath();
+  const db = getSqliteDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS html (
+      url TEXT PRIMARY KEY,
+      fakeid TEXT NOT NULL,
+      title TEXT NOT NULL,
+      comment_id TEXT,
+      blob_kind TEXT NOT NULL,
+      blob_sha256 TEXT NOT NULL,
+      blob_file_type TEXT NOT NULL,
+      blob_size INTEGER NOT NULL,
+      blob_relative_path TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS metadata (
+      url TEXT PRIMARY KEY,
+      fakeid TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS comment (
+      url TEXT PRIMARY KEY,
+      fakeid TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS comment_reply (
+      url TEXT NOT NULL,
+      content_id TEXT NOT NULL,
+      fakeid TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      PRIMARY KEY(url, content_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS resource (
+      url TEXT PRIMARY KEY,
+      fakeid TEXT NOT NULL,
+      blob_kind TEXT NOT NULL,
+      blob_sha256 TEXT NOT NULL,
+      blob_file_type TEXT NOT NULL,
+      blob_size INTEGER NOT NULL,
+      blob_relative_path TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS resource_map (
+      url TEXT PRIMARY KEY,
+      fakeid TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS asset (
+      url TEXT PRIMARY KEY,
+      fakeid TEXT NOT NULL,
+      blob_kind TEXT NOT NULL,
+      blob_sha256 TEXT NOT NULL,
+      blob_file_type TEXT NOT NULL,
+      blob_size INTEGER NOT NULL,
+      blob_relative_path TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS debug (
+      url TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      fakeid TEXT NOT NULL,
+      blob_kind TEXT NOT NULL,
+      blob_sha256 TEXT NOT NULL,
+      blob_file_type TEXT NOT NULL,
+      blob_size INTEGER NOT NULL,
+      blob_relative_path TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_html_fakeid ON html(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_metadata_fakeid ON metadata(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_comment_fakeid ON comment(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_comment_reply_fakeid ON comment_reply(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_resource_fakeid ON resource(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_resource_map_fakeid ON resource_map(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_asset_fakeid ON asset(fakeid);
+    CREATE INDEX IF NOT EXISTS idx_debug_fakeid ON debug(fakeid);
+  `);
+
+  migrateLegacyJsonIfNeeded();
+  initialized = true;
+}
+
+function tableCount(tableName: string): number {
+  const db = getSqliteDb();
+  const row = db.prepare(`SELECT COUNT(*) as count FROM ${tableName}`).get() as { count: number };
+  return row.count;
+}
+
+function migrateLegacyJsonIfNeeded(): void {
+  const hasData =
+    tableCount('html') > 0 ||
+    tableCount('metadata') > 0 ||
+    tableCount('comment') > 0 ||
+    tableCount('comment_reply') > 0 ||
+    tableCount('resource') > 0 ||
+    tableCount('resource_map') > 0 ||
+    tableCount('asset') > 0 ||
+    tableCount('debug') > 0;
+
+  if (hasData) {
+    return;
+  }
+
+  const legacyPath = path.join(getDbBaseDirPath(), 'content-db.json');
+  if (!existsSync(legacyPath)) {
+    return;
+  }
+
   try {
-    const raw = await fs.readFile(filePath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<ContentDbState>;
-    state = {
-      html: parsed.html || {},
-      metadata: parsed.metadata || {},
-      comment: parsed.comment || {},
-      commentReply: parsed.commentReply || {},
-      resource: parsed.resource || {},
-      resourceMap: parsed.resourceMap || {},
-      asset: parsed.asset || {},
-      debug: parsed.debug || {},
-    };
-  } catch (error: any) {
-    if (error?.code !== 'ENOENT') {
-      console.error('Failed to load content database, fallback to empty state:', error);
-    }
-    state = structuredClone(DEFAULT_STATE);
+    const parsed = JSON.parse(readFileSync(legacyPath, 'utf-8')) as LegacyContentDbState;
+    const db = getSqliteDb();
+
+    const tx = db.transaction(() => {
+      const upsertHtml = db.prepare(`
+        INSERT INTO html (
+          url, fakeid, title, comment_id,
+          blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+          fakeid = excluded.fakeid,
+          title = excluded.title,
+          comment_id = excluded.comment_id,
+          blob_kind = excluded.blob_kind,
+          blob_sha256 = excluded.blob_sha256,
+          blob_file_type = excluded.blob_file_type,
+          blob_size = excluded.blob_size,
+          blob_relative_path = excluded.blob_relative_path
+      `);
+
+      const upsertPayloadByUrl = {
+        metadata: db.prepare(`
+          INSERT INTO metadata (url, fakeid, payload)
+          VALUES (?, ?, ?)
+          ON CONFLICT(url) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+        `),
+        comment: db.prepare(`
+          INSERT INTO comment (url, fakeid, payload)
+          VALUES (?, ?, ?)
+          ON CONFLICT(url) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+        `),
+        resourceMap: db.prepare(`
+          INSERT INTO resource_map (url, fakeid, payload)
+          VALUES (?, ?, ?)
+          ON CONFLICT(url) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+        `),
+      };
+
+      const upsertCommentReply = db.prepare(`
+        INSERT INTO comment_reply (url, content_id, fakeid, payload)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(url, content_id) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+      `);
+
+      const upsertResource = db.prepare(`
+        INSERT INTO resource (
+          url, fakeid, blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+          fakeid = excluded.fakeid,
+          blob_kind = excluded.blob_kind,
+          blob_sha256 = excluded.blob_sha256,
+          blob_file_type = excluded.blob_file_type,
+          blob_size = excluded.blob_size,
+          blob_relative_path = excluded.blob_relative_path
+      `);
+
+      const upsertAsset = db.prepare(`
+        INSERT INTO asset (
+          url, fakeid, blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+          fakeid = excluded.fakeid,
+          blob_kind = excluded.blob_kind,
+          blob_sha256 = excluded.blob_sha256,
+          blob_file_type = excluded.blob_file_type,
+          blob_size = excluded.blob_size,
+          blob_relative_path = excluded.blob_relative_path
+      `);
+
+      const upsertDebug = db.prepare(`
+        INSERT INTO debug (
+          url, type, title, fakeid,
+          blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+          type = excluded.type,
+          title = excluded.title,
+          fakeid = excluded.fakeid,
+          blob_kind = excluded.blob_kind,
+          blob_sha256 = excluded.blob_sha256,
+          blob_file_type = excluded.blob_file_type,
+          blob_size = excluded.blob_size,
+          blob_relative_path = excluded.blob_relative_path
+      `);
+
+      for (const item of Object.values(parsed.html || {})) {
+        if (!item?.url || !item?.fakeid || !item?.title || !item?.blob) {
+          continue;
+        }
+        upsertHtml.run(
+          item.url,
+          item.fakeid,
+          item.title,
+          item.commentID,
+          item.blob.kind,
+          item.blob.sha256,
+          item.blob.file_type,
+          Number(item.blob.size) || 0,
+          item.blob.relative_path
+        );
+      }
+
+      for (const item of Object.values(parsed.metadata || {})) {
+        if (!item?.url || !item?.fakeid) {
+          continue;
+        }
+        upsertPayloadByUrl.metadata.run(item.url, item.fakeid, JSON.stringify(item));
+      }
+
+      for (const item of Object.values(parsed.comment || {})) {
+        if (!item?.url || !item?.fakeid) {
+          continue;
+        }
+        upsertPayloadByUrl.comment.run(item.url, item.fakeid, JSON.stringify(item));
+      }
+
+      for (const item of Object.values(parsed.commentReply || {})) {
+        if (!item?.url || !item?.fakeid || !item?.contentID) {
+          continue;
+        }
+        upsertCommentReply.run(item.url, item.contentID, item.fakeid, JSON.stringify(item));
+      }
+
+      for (const item of Object.values(parsed.resource || {})) {
+        if (!item?.url || !item?.fakeid || !item?.blob) {
+          continue;
+        }
+        upsertResource.run(
+          item.url,
+          item.fakeid,
+          item.blob.kind,
+          item.blob.sha256,
+          item.blob.file_type,
+          Number(item.blob.size) || 0,
+          item.blob.relative_path
+        );
+      }
+
+      for (const item of Object.values(parsed.resourceMap || {})) {
+        if (!item?.url || !item?.fakeid) {
+          continue;
+        }
+        upsertPayloadByUrl.resourceMap.run(item.url, item.fakeid, JSON.stringify(item));
+      }
+
+      for (const item of Object.values(parsed.asset || {})) {
+        if (!item?.url || !item?.fakeid || !item?.blob) {
+          continue;
+        }
+        upsertAsset.run(
+          item.url,
+          item.fakeid,
+          item.blob.kind,
+          item.blob.sha256,
+          item.blob.file_type,
+          Number(item.blob.size) || 0,
+          item.blob.relative_path
+        );
+      }
+
+      for (const item of Object.values(parsed.debug || {})) {
+        if (!item?.url || !item?.fakeid || !item?.title || !item?.type || !item?.blob) {
+          continue;
+        }
+        upsertDebug.run(
+          item.url,
+          item.type,
+          item.title,
+          item.fakeid,
+          item.blob.kind,
+          item.blob.sha256,
+          item.blob.file_type,
+          Number(item.blob.size) || 0,
+          item.blob.relative_path
+        );
+      }
+    });
+
+    tx();
+  } catch (error) {
+    console.error('Failed to migrate legacy content-db.json into sqlite:', error);
   }
 }
 
-async function persist(): Promise<void> {
-  await ensureLoaded();
-
-  const baseDir = getDbBaseDir();
-  const filePath = getDbFilePath();
-  const tmpPath = `${filePath}.tmp`;
-  await fs.mkdir(baseDir, { recursive: true });
-  await fs.writeFile(tmpPath, JSON.stringify(state), 'utf-8');
-  await fs.rename(tmpPath, filePath);
+function parsePayload<T>(payload: string): T | undefined {
+  try {
+    return JSON.parse(payload) as T;
+  } catch {
+    return undefined;
+  }
 }
 
-async function runExclusive<T>(task: () => Promise<T>): Promise<T> {
-  const next = queue.then(task, task);
-  queue = next.then(
-    () => undefined,
-    () => undefined
-  );
-  return next;
-}
-
-function createCommentReplyKey(url: string, contentID: string): string {
-  return `${url}:${contentID}`;
+function toBlobRef(row: BlobRow): BlobRef {
+  return {
+    kind: row.blob_kind,
+    sha256: row.blob_sha256,
+    file_type: row.blob_file_type,
+    size: Number(row.blob_size) || 0,
+    relative_path: row.blob_relative_path,
+  };
 }
 
 async function saveBlob(kind: string, base64: string, fileType?: string): Promise<BlobRef> {
@@ -161,6 +415,7 @@ async function saveBlob(kind: string, base64: string, fileType?: string): Promis
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   const relativePath = path.join(kind, sha256);
   const absPath = path.join(getBlobRootDir(), relativePath);
+
   await fs.mkdir(path.dirname(absPath), { recursive: true });
   try {
     await fs.access(absPath);
@@ -191,19 +446,38 @@ export async function upsertHtmlToDb(payload: {
   file_base64: string;
   file_type?: string;
 }): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const blob = await saveBlob('html', payload.file_base64, payload.file_type);
-    state!.html[payload.url] = {
-      fakeid: payload.fakeid,
-      url: payload.url,
-      title: payload.title,
-      commentID: payload.commentID,
-      blob,
-    };
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  const blob = await saveBlob('html', payload.file_base64, payload.file_type);
+
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO html (
+        url, fakeid, title, comment_id,
+        blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET
+        fakeid = excluded.fakeid,
+        title = excluded.title,
+        comment_id = excluded.comment_id,
+        blob_kind = excluded.blob_kind,
+        blob_sha256 = excluded.blob_sha256,
+        blob_file_type = excluded.blob_file_type,
+        blob_size = excluded.blob_size,
+        blob_relative_path = excluded.blob_relative_path
+    `)
+    .run(
+      payload.url,
+      payload.fakeid,
+      payload.title,
+      payload.commentID,
+      blob.kind,
+      blob.sha256,
+      blob.file_type,
+      blob.size,
+      blob.relative_path
+    );
+
+  return true;
 }
 
 export async function getHtmlFromDb(url: string): Promise<
@@ -217,81 +491,129 @@ export async function getHtmlFromDb(url: string): Promise<
     }
   | undefined
 > {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const found = state!.html[url];
-    if (!found) {
-      return undefined;
-    }
-    return {
-      fakeid: found.fakeid,
-      url: found.url,
-      title: found.title,
-      commentID: found.commentID,
-      file_base64: await readBlobAsBase64(found.blob),
-      file_type: found.blob.file_type,
-    };
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb()
+    .prepare(`
+      SELECT
+        fakeid, url, title, comment_id,
+        blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      FROM html
+      WHERE url = ?
+    `)
+    .get(url) as
+    | (BlobRow & {
+        fakeid: string;
+        url: string;
+        title: string;
+        comment_id: string | null;
+      })
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  const blob = toBlobRef(row);
+  return {
+    fakeid: row.fakeid,
+    url: row.url,
+    title: row.title,
+    commentID: row.comment_id,
+    file_base64: await readBlobAsBase64(blob),
+    file_type: blob.file_type,
+  };
 }
 
 export async function deleteHtmlFromDb(url: string): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    if (state!.html[url]) {
-      delete state!.html[url];
-      await persist();
-      return true;
-    }
-    return false;
-  });
+  ensureSchemaAndMigrate();
+  const result = getSqliteDb().prepare('DELETE FROM html WHERE url = ?').run(url);
+  return result.changes > 0;
 }
 
 export async function upsertMetadataToDb(payload: MetadataRecord): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    state!.metadata[payload.url] = payload;
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO metadata (url, fakeid, payload)
+      VALUES (?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+    `)
+    .run(payload.url, payload.fakeid, JSON.stringify(payload));
+
+  return true;
 }
 
 export async function getMetadataFromDb(url: string): Promise<MetadataRecord | undefined> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return state!.metadata[url];
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb().prepare('SELECT payload FROM metadata WHERE url = ?').get(url) as
+    | {
+        payload: string;
+      }
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return parsePayload<MetadataRecord>(row.payload);
 }
 
 export async function upsertCommentToDb(payload: CommentRecord): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    state!.comment[payload.url] = payload;
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO comment (url, fakeid, payload)
+      VALUES (?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+    `)
+    .run(payload.url, payload.fakeid, JSON.stringify(payload));
+
+  return true;
 }
 
 export async function getCommentFromDb(url: string): Promise<CommentRecord | undefined> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return state!.comment[url];
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb().prepare('SELECT payload FROM comment WHERE url = ?').get(url) as
+    | {
+        payload: string;
+      }
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return parsePayload<CommentRecord>(row.payload);
 }
 
 export async function upsertCommentReplyToDb(payload: CommentReplyRecord): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    state!.commentReply[createCommentReplyKey(payload.url, payload.contentID)] = payload;
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO comment_reply (url, content_id, fakeid, payload)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(url, content_id) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+    `)
+    .run(payload.url, payload.contentID, payload.fakeid, JSON.stringify(payload));
+
+  return true;
 }
 
 export async function getCommentReplyFromDb(url: string, contentID: string): Promise<CommentReplyRecord | undefined> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return state!.commentReply[createCommentReplyKey(url, contentID)];
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb()
+    .prepare('SELECT payload FROM comment_reply WHERE url = ? AND content_id = ?')
+    .get(url, contentID) as
+    | {
+        payload: string;
+      }
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return parsePayload<CommentReplyRecord>(row.payload);
 }
 
 export async function upsertResourceToDb(payload: {
@@ -300,17 +622,24 @@ export async function upsertResourceToDb(payload: {
   file_base64: string;
   file_type?: string;
 }): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const blob = await saveBlob('resource', payload.file_base64, payload.file_type);
-    state!.resource[payload.url] = {
-      fakeid: payload.fakeid,
-      url: payload.url,
-      blob,
-    };
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  const blob = await saveBlob('resource', payload.file_base64, payload.file_type);
+
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO resource (url, fakeid, blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET
+        fakeid = excluded.fakeid,
+        blob_kind = excluded.blob_kind,
+        blob_sha256 = excluded.blob_sha256,
+        blob_file_type = excluded.blob_file_type,
+        blob_size = excluded.blob_size,
+        blob_relative_path = excluded.blob_relative_path
+    `)
+    .run(payload.url, payload.fakeid, blob.kind, blob.sha256, blob.file_type, blob.size, blob.relative_path);
+
+  return true;
 }
 
 export async function getResourceFromDb(url: string): Promise<
@@ -322,35 +651,59 @@ export async function getResourceFromDb(url: string): Promise<
     }
   | undefined
 > {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const found = state!.resource[url];
-    if (!found) {
-      return undefined;
-    }
-    return {
-      fakeid: found.fakeid,
-      url: found.url,
-      file_base64: await readBlobAsBase64(found.blob),
-      file_type: found.blob.file_type,
-    };
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb()
+    .prepare(`
+      SELECT fakeid, url, blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      FROM resource
+      WHERE url = ?
+    `)
+    .get(url) as
+    | (BlobRow & {
+        fakeid: string;
+        url: string;
+      })
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  const blob = toBlobRef(row);
+  return {
+    fakeid: row.fakeid,
+    url: row.url,
+    file_base64: await readBlobAsBase64(blob),
+    file_type: blob.file_type,
+  };
 }
 
 export async function upsertResourceMapToDb(payload: ResourceMapRecord): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    state!.resourceMap[payload.url] = payload;
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO resource_map (url, fakeid, payload)
+      VALUES (?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET fakeid = excluded.fakeid, payload = excluded.payload
+    `)
+    .run(payload.url, payload.fakeid, JSON.stringify(payload));
+
+  return true;
 }
 
 export async function getResourceMapFromDb(url: string): Promise<ResourceMapRecord | undefined> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    return state!.resourceMap[url];
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb().prepare('SELECT payload FROM resource_map WHERE url = ?').get(url) as
+    | {
+        payload: string;
+      }
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return parsePayload<ResourceMapRecord>(row.payload);
 }
 
 export async function upsertAssetToDb(payload: {
@@ -359,17 +712,24 @@ export async function upsertAssetToDb(payload: {
   file_base64: string;
   file_type?: string;
 }): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const blob = await saveBlob('asset', payload.file_base64, payload.file_type);
-    state!.asset[payload.url] = {
-      fakeid: payload.fakeid,
-      url: payload.url,
-      blob,
-    };
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  const blob = await saveBlob('asset', payload.file_base64, payload.file_type);
+
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO asset (url, fakeid, blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET
+        fakeid = excluded.fakeid,
+        blob_kind = excluded.blob_kind,
+        blob_sha256 = excluded.blob_sha256,
+        blob_file_type = excluded.blob_file_type,
+        blob_size = excluded.blob_size,
+        blob_relative_path = excluded.blob_relative_path
+    `)
+    .run(payload.url, payload.fakeid, blob.kind, blob.sha256, blob.file_type, blob.size, blob.relative_path);
+
+  return true;
 }
 
 export async function getAssetFromDb(url: string): Promise<
@@ -381,19 +741,31 @@ export async function getAssetFromDb(url: string): Promise<
     }
   | undefined
 > {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const found = state!.asset[url];
-    if (!found) {
-      return undefined;
-    }
-    return {
-      fakeid: found.fakeid,
-      url: found.url,
-      file_base64: await readBlobAsBase64(found.blob),
-      file_type: found.blob.file_type,
-    };
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb()
+    .prepare(`
+      SELECT fakeid, url, blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      FROM asset
+      WHERE url = ?
+    `)
+    .get(url) as
+    | (BlobRow & {
+        fakeid: string;
+        url: string;
+      })
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  const blob = toBlobRef(row);
+  return {
+    fakeid: row.fakeid,
+    url: row.url,
+    file_base64: await readBlobAsBase64(blob),
+    file_type: blob.file_type,
+  };
 }
 
 export async function upsertDebugToDb(payload: {
@@ -404,19 +776,38 @@ export async function upsertDebugToDb(payload: {
   file_base64: string;
   file_type?: string;
 }): Promise<boolean> {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const blob = await saveBlob('debug', payload.file_base64, payload.file_type);
-    state!.debug[payload.url] = {
-      type: payload.type,
-      url: payload.url,
-      title: payload.title,
-      fakeid: payload.fakeid,
-      blob,
-    };
-    await persist();
-    return true;
-  });
+  ensureSchemaAndMigrate();
+  const blob = await saveBlob('debug', payload.file_base64, payload.file_type);
+
+  getSqliteDb()
+    .prepare(`
+      INSERT INTO debug (
+        url, type, title, fakeid,
+        blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(url) DO UPDATE SET
+        type = excluded.type,
+        title = excluded.title,
+        fakeid = excluded.fakeid,
+        blob_kind = excluded.blob_kind,
+        blob_sha256 = excluded.blob_sha256,
+        blob_file_type = excluded.blob_file_type,
+        blob_size = excluded.blob_size,
+        blob_relative_path = excluded.blob_relative_path
+    `)
+    .run(
+      payload.url,
+      payload.type,
+      payload.title,
+      payload.fakeid,
+      blob.kind,
+      blob.sha256,
+      blob.file_type,
+      blob.size,
+      blob.relative_path
+    );
+
+  return true;
 }
 
 export async function getDebugFromDb(url: string): Promise<
@@ -430,21 +821,37 @@ export async function getDebugFromDb(url: string): Promise<
     }
   | undefined
 > {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const found = state!.debug[url];
-    if (!found) {
-      return undefined;
-    }
-    return {
-      type: found.type,
-      url: found.url,
-      title: found.title,
-      fakeid: found.fakeid,
-      file_base64: await readBlobAsBase64(found.blob),
-      file_type: found.blob.file_type,
-    };
-  });
+  ensureSchemaAndMigrate();
+  const row = getSqliteDb()
+    .prepare(`
+      SELECT
+        type, title, fakeid, url,
+        blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      FROM debug
+      WHERE url = ?
+    `)
+    .get(url) as
+    | (BlobRow & {
+        type: string;
+        title: string;
+        fakeid: string;
+        url: string;
+      })
+    | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  const blob = toBlobRef(row);
+  return {
+    type: row.type,
+    url: row.url,
+    title: row.title,
+    fakeid: row.fakeid,
+    file_base64: await readBlobAsBase64(blob),
+    file_type: blob.file_type,
+  };
 }
 
 export async function getAllDebugFromDb(): Promise<
@@ -457,76 +864,71 @@ export async function getAllDebugFromDb(): Promise<
     file_type: string;
   }[]
 > {
-  return runExclusive(async () => {
-    await ensureLoaded();
-    const result: {
-      type: string;
-      url: string;
-      title: string;
-      fakeid: string;
-      file_base64: string;
-      file_type: string;
-    }[] = [];
-    for (const item of Object.values(state!.debug)) {
-      result.push({
-        type: item.type,
-        url: item.url,
-        title: item.title,
-        fakeid: item.fakeid,
-        file_base64: await readBlobAsBase64(item.blob),
-        file_type: item.blob.file_type,
-      });
-    }
-    return result;
-  });
+  ensureSchemaAndMigrate();
+  const rows = getSqliteDb()
+    .prepare(`
+      SELECT
+        type, title, fakeid, url,
+        blob_kind, blob_sha256, blob_file_type, blob_size, blob_relative_path
+      FROM debug
+      ORDER BY rowid ASC
+    `)
+    .all() as (BlobRow & {
+    type: string;
+    title: string;
+    fakeid: string;
+    url: string;
+  })[];
+
+  const result: {
+    type: string;
+    url: string;
+    title: string;
+    fakeid: string;
+    file_base64: string;
+    file_type: string;
+  }[] = [];
+
+  for (const row of rows) {
+    const blob = toBlobRef(row);
+    result.push({
+      type: row.type,
+      url: row.url,
+      title: row.title,
+      fakeid: row.fakeid,
+      file_base64: await readBlobAsBase64(blob),
+      file_type: blob.file_type,
+    });
+  }
+
+  return result;
+}
+
+function deleteByFakeids(tableName: string, fakeids: string[]): void {
+  if (!fakeids.length) {
+    return;
+  }
+  const placeholders = fakeids.map(() => '?').join(',');
+  getSqliteDb().prepare(`DELETE FROM ${tableName} WHERE fakeid IN (${placeholders})`).run(...fakeids);
 }
 
 export async function deleteAccountContentFromDb(fakeids: string[]): Promise<void> {
-  await runExclusive(async () => {
-    await ensureLoaded();
-    const idSet = new Set(fakeids);
+  if (!fakeids.length) {
+    return;
+  }
 
-    for (const [url, item] of Object.entries(state!.html)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.html[url];
-      }
-    }
-    for (const [url, item] of Object.entries(state!.metadata)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.metadata[url];
-      }
-    }
-    for (const [url, item] of Object.entries(state!.comment)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.comment[url];
-      }
-    }
-    for (const [key, item] of Object.entries(state!.commentReply)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.commentReply[key];
-      }
-    }
-    for (const [url, item] of Object.entries(state!.resource)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.resource[url];
-      }
-    }
-    for (const [url, item] of Object.entries(state!.resourceMap)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.resourceMap[url];
-      }
-    }
-    for (const [url, item] of Object.entries(state!.asset)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.asset[url];
-      }
-    }
-    for (const [url, item] of Object.entries(state!.debug)) {
-      if (idSet.has(item.fakeid)) {
-        delete state!.debug[url];
-      }
-    }
-
-    await persist();
+  ensureSchemaAndMigrate();
+  const db = getSqliteDb();
+  const tx = db.transaction((ids: string[]) => {
+    deleteByFakeids('html', ids);
+    deleteByFakeids('metadata', ids);
+    deleteByFakeids('comment', ids);
+    deleteByFakeids('comment_reply', ids);
+    deleteByFakeids('resource', ids);
+    deleteByFakeids('resource_map', ids);
+    deleteByFakeids('asset', ids);
+    deleteByFakeids('debug', ids);
   });
+
+  tx(fakeids);
 }
