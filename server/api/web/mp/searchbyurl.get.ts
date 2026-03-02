@@ -7,6 +7,7 @@ interface UrlQuery {
 export default defineEventHandler(async event => {
   let { url } = getQuery<UrlQuery>(event);
 
+  debugger;
   const name = await request('/api/web/misc/accountname?url=' + encodeURIComponent(url));
   if (!name) {
     return {
@@ -17,12 +18,14 @@ export default defineEventHandler(async event => {
     };
   }
 
+  debugger;
   const originalResp = await request(`/api/web/mp/searchbiz?keyword=${name}&size=20`, {
     headers: {
       'X-Auth-Key': getHeader(event, 'X-Auth-Key')!,
       Cookie: getHeader(event, 'Cookie')!,
     },
   });
+  debugger;
   if (originalResp.base_resp.ret !== 0) {
     return originalResp;
   }

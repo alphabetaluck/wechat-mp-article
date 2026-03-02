@@ -78,6 +78,7 @@ export async function getAccountList(begin = 0, keyword = ''): Promise<[AccountI
       keyword: keyword,
     },
   });
+  debugger;
 
   if (resp.base_resp.ret === 0) {
     // 公众号判断是否结束的逻辑与文章不太一样
